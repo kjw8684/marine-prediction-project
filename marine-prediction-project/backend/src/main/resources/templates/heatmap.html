@@ -14,9 +14,19 @@
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
     <script>
-        const map = L.map('map').setView([36, 127], 6);
+
+        // 한반도 해역 중심, zoom 7, 이동 제한(bounding box)
+        const bounds = L.latLngBounds(
+            L.latLng(33.0, 124.0), // 남서
+            L.latLng(39.0, 132.0)  // 북동
+        );
+        const map = L.map('map', {
+            maxBounds: bounds,
+            maxBoundsViscosity: 1.0
+        }).setView([36, 128], 7);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 12,
+            minZoom: 6
         }).addTo(map);
 
         // 예시: 멸치, 오늘 날짜
