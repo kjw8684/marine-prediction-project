@@ -304,36 +304,38 @@ def process_point(args):
 
     return rows
 
-def build_training_data():
-    # 새 데이터 생성
-    tasks = [(float(lat), float(lon), str(date), TARGET_SPECIES)
-    for lat in LATS for lon in LONS for date in DAYS]
-    log(f"총 {len(tasks)}개 작업 생성")
+def process_one_day(date):
     all_rows = []
-    for task in tasks:
-        rows = process_point(task)
-        all_rows.extend(rows)
-    new_df = pd.DataFrame(all_rows)
-    new_df = new_df.dropna()
+    for lat in LATS:
+        for lon in LONS:
+            task = (float(lat), float(lon), str(date), TARGET_SPECIES)
+            rows = process_point(task)
+            all_rows.extend(rows)
+    day_df = pd.DataFrame(all_rows)
+    day_df = day_df.dropna()
 
-    # 기존 파일이 있으면 불러와서 누적
-    if os.path.exists(TRAIN_CSV_PATH):
-        old_df = pd.read_csv(TRAIN_CSV_PATH)
-        df = pd.concat([old_df, new_df], ignore_index=True)
-    else:
-        df = new_df
+    # 학습 데이터 누적 저장 (append)
+    if not day_df.empty:
+        if not os.path.exists(TRAIN_CSV_PATH):
+            day_df.to_csv(TRAIN_CSV_PATH, index=False)
+        else:
+            day_df.to_csv(TRAIN_CSV_PATH, mode='a', header=False, index=False)
 
-    # 날짜 컬럼을 datetime으로 변환 후 최근 1년(365일)치만 남김
-    if 'date' in df.columns:
-        df['date'] = pd.to_datetime(df['date'])
-        cutoff = pd.Timestamp.today() - pd.Timedelta(days=365)
-        df = df[df['date'] >= cutoff]
+    # 해당 날짜 .nc 파일 삭제
+    date_str = str(date)[:10]
+    phy_nc = os.path.join(CMEMS_DIR, f"cmems_phy_{date_str}.nc")
+    bgc_nc = os.path.join(CMEMS_DIR, f"cmems_bgc_{date_str}.nc")
+    for nc_path in [phy_nc, bgc_nc]:
+        if os.path.exists(nc_path):
+            try:
+                os.remove(nc_path)
+            except Exception as e:
+                print(f"{nc_path} 삭제 실패: {e}")
 
-    # 중복 제거 (lat, lon, date, species, present 기준)
-    df = df.drop_duplicates(subset=['lat', 'lon', 'date', 'species', 'present'], keep='last')
-    df = df.reset_index(drop=True)
-    df.to_csv(TRAIN_CSV_PATH, index=False)
-    log(f"학습 데이터 저장: {TRAIN_CSV_PATH} ({len(df)} rows, 최근 1년치)")
+def build_training_data():
+    with ProcessPoolExecutor(max_workers=4) as executor:
+        list(executor.map(process_one_day, DAYS))
+    print("모든 날짜 데이터 처리 및 .nc 파일 정리 완료")
 
 def train_and_export_pmml():
     df = pd.read_csv(TRAIN_CSV_PATH)
