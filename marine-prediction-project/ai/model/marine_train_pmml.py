@@ -43,76 +43,11 @@ def log(msg):
     except Exception:
         pass
 
-def get_available_variables(dataset_id):
-    """
-    CMEMS 데이터셋에서 사용 가능한 변수들을 확인하는 함수
-    """
-    try:
-        log(f"[get_available_variables] {dataset_id} 변수 목록 확인 중...")
-
-        # CMEMS API로 데이터셋 정보 조회
-        import subprocess
-        import json
-
-        # 명령줄에서 데이터셋 정보 조회
-        cmd = f"copernicusmarine describe --dataset-id {dataset_id} --json"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-
-        if result.returncode == 0:
-            info = json.loads(result.stdout)
-            variables = [var['short_name'] for var in info.get('variables', [])]
-            log(f"[get_available_variables] {dataset_id} 사용 가능한 변수: {variables}")
-            return variables
-        else:
-            log(f"[get_available_variables] 오류: {result.stderr}")
-            return []
-
-    except Exception as e:
-        log(f"[get_available_variables] 예외: {e}")
-        return []
-
-def find_correct_variable_names():
-    """
-    올바른 CMEMS 변수명을 찾는 함수
-    """
-    # 일반적인 CMEMS 데이터셋들
-    datasets = [
-        "cmems_mod_glo_phy_anfc_0.083deg_P1D-m",
-        "cmems_mod_glo_phy-thetao_anfc_0.083deg_P1D-m",
-        "cmems_mod_glo_bgc-bio_anfc_0.25deg_P1D-m"
-    ]
-
-    variable_mapping = {}
-
-    for dataset_id in datasets:
-        variables = get_available_variables(dataset_id)
-        if variables:
-            variable_mapping[dataset_id] = variables
-
-    return variable_mapping
 
 def get_best_dataset_and_variables():
     """
-    최적의 데이터셋과 변수 조합을 찾는 함수
+    실제 사용할 CMEMS 데이터셋과 변수명을 반환
     """
-    # 일반적으로 알려진 CMEMS 변수명들
-    common_variables = {
-        # 물리 데이터
-        "temperature": ["bottomT", "thetao", "votemper", "temperature", "tem", "temp", "so_abs"],
-        "salinity": ["bottomS", "so", "vosaline", "salinity", "sal"],
-        "sea_surface_height": ["zos", "sla", "adt", "sea_surface_height"],
-        "current_u": ["uo", "vozocrtx", "eastward_sea_water_velocity"],
-        "current_v": ["vo", "vomecrty", "northward_sea_water_velocity"],
-
-        # 생지화학 데이터
-        "oxygen": ["o2", "doxy", "dissolved_oxygen", "oxygen"],
-        "chlorophyll": ["chl", "chla", "chlorophyll"],
-        "nitrate": ["no3", "nitrate"],
-        "phosphate": ["po4", "phosphate"],
-        "phytoplankton": ["phyc", "phytoplankton_carbon"]
-    }
-
-    # 실제 사용할 데이터셋과 변수 매핑
     dataset_config = {
         "physics": {
             "dataset_id": "cmems_mod_glo_phy_anfc_0.083deg_P1D-m",
@@ -352,99 +287,6 @@ def get_cmems_data(lat, lon, date):
     log(f"[get_cmems_data] 결과: {lat},{lon},{date} -> {result}")
     return result
 
-    # 파일 경로
-    phy_nc = os.path.join(CMEMS_DIR, f"cmems_phy_{date_str}.nc")
-    bgc_nc = os.path.join(CMEMS_DIR, f"cmems_bgc_{date_str}.nc")
-
-    # 시간 범위 (파일이 없을 때만 다운로드)
-    start_datetime = f"{date_str}T00:00:00"
-    end_datetime = f"{date_str}T23:59:59"
-
-    # 하루에 한 번만 파일 다운로드 (존재하지 않을 때만)
-    phy_config = config["physics"]
-    if not os.path.exists(phy_nc):
-        download_with_lock(
-            phy_nc,
-            phy_config["dataset_id"],
-            list(phy_config["variables"].values()),
-            start_datetime,
-            end_datetime
-        )
-    bgc_config = config["biogeochemistry"]
-    if not os.path.exists(bgc_nc):
-        download_with_lock(
-            bgc_nc,
-            bgc_config["dataset_id"],
-            list(bgc_config["variables"].values()),
-            start_datetime,
-            end_datetime
-        )
-
-    result = {}
-    try:
-        # 이미 받아둔 파일에서 값 추출
-        if os.path.exists(phy_nc):
-            result["bottom_temp"] = extract_var(phy_nc, phy_config["variables"]["temperature"], lat, lon, date_str)
-            result["bottom_salinity"] = extract_var(phy_nc, phy_config["variables"]["salinity"], lat, lon, date_str)
-            result["sea_surface_height"] = extract_var(phy_nc, phy_config["variables"]["sea_surface_height"], lat, lon, date_str)
-        else:
-            result["bottom_temp"] = float('nan')
-            result["bottom_salinity"] = float('nan')
-            result["sea_surface_height"] = float('nan')
-
-        if os.path.exists(bgc_nc):
-            result["primary_production"] = extract_var(bgc_nc, bgc_config["variables"]["primary_production"], lat, lon, date_str)
-            result["oxygen"] = extract_var(bgc_nc, bgc_config["variables"]["oxygen"], lat, lon, date_str)
-        else:
-            result["primary_production"] = float('nan')
-            result["oxygen"] = float('nan')
-
-        log(f"[get_cmems_data] 결과: {lat},{lon},{date} -> {result}")
-        return result
-
-    except Exception as e:
-        log(f"[get_cmems_data] 오류: {lat},{lon},{date} - {e}")
-        return {
-            "bottom_temp": float('nan'),
-            "bottom_salinity": float('nan'),
-            "sea_surface_height": float('nan'),
-            "primary_production": float('nan'),
-            "oxygen": float('nan')
-        }
-        with env_cache_lock:
-            if not os.path.exists(ENV_CACHE_PATH):
-                with open(ENV_CACHE_PATH, "w", newline='', encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=["key", "bottom_temp", "bottom_salinity", "sea_surface_height", "oxygen"])
-                    writer.writeheader()
-
-    try:
-        with env_cache_lock:
-            with open(ENV_CACHE_PATH, "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    if row["key"] == key:
-                        vals = {k: float(row[k]) for k in ["bottom_temp", "bottom_salinity", "sea_surface_height", "oxygen"]}
-                        if not all(pd.isna(vals[k]) for k in vals):
-                            log(f"[get_env_cached] 캐시 히트: {key} -> {vals}")
-                            return vals
-                        else:
-                            log(f"[get_env_cached] 캐시에서 NaN 발견, 재요청: {key}")
-                            break
-    except Exception as e:
-        log(f"[get_env_cached] 캐시 읽기 오류: {e}")
-
-    env = get_cmems_data(lat, lon, date)
-
-    if not isinstance(env, dict) or any(k not in env for k in ["bottom_temp", "bottom_salinity", "sea_surface_height", "oxygen"]):
-        env = {k: float('nan') for k in ["bottom_temp", "bottom_salinity", "sea_surface_height", "oxygen"]}
-
-    with env_cache_lock:
-        with open(ENV_CACHE_PATH, "a", newline='', encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["key", "bottom_temp", "bottom_salinity", "sea_surface_height", "oxygen"])
-            writer.writerow({"key": key, **env})
-
-    return env
-
 def get_obis_data(lat, lon, date):
     return []
 
@@ -458,40 +300,40 @@ def process_point(args):
         label = 1 if species in observed_species else 0
         row = {"lat": lat, "lon": lon, "date": date, **env, "species": species, "present": label}
 
-        nan_count = sum([pd.isna(row.get(k, float('nan'))) for k in ["bottom_temp", "bottom_salinity", "sea_surface_height", "primary_production", "oxygen"]])
-        if nan_count > 0:
-            log(f"[process_point] NaN 발견: {row}")
-
         rows.append(row)
 
     return rows
 
 def build_training_data():
-    for path in [ENV_CACHE_PATH, TRAIN_CSV_PATH, LOG_PATH]:
-        if os.path.exists(path):
-            os.remove(path)
-            log(f"기존 파일 삭제: {path}")
-
-    with open(TRAIN_CSV_PATH, "w", newline='', encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["lat", "lon", "date", "bottom_temp", "bottom_salinity", "sea_surface_height", "primary_production", "oxygen", "species", "present"])
-        writer.writeheader()
-
+    # 새 데이터 생성
     tasks = [(float(lat), float(lon), str(date), TARGET_SPECIES)
-             for lat in LATS for lon in LONS for date in DAYS]
-
+    for lat in LATS for lon in LONS for date in DAYS]
     log(f"총 {len(tasks)}개 작업 생성")
+    all_rows = []
+    for task in tasks:
+        rows = process_point(task)
+        all_rows.extend(rows)
+    new_df = pd.DataFrame(all_rows)
+    new_df = new_df.dropna()
 
-    with ProcessPoolExecutor(max_workers=2) as executor:  # 워커 수 더 줄임
-        completed = 0
-        for rows in executor.map(process_point, tasks):
-            with open(TRAIN_CSV_PATH, "a", newline='', encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=["lat", "lon", "date", "bottom_temp", "bottom_salinity", "sea_surface_height", "primary_production", "oxygen", "species", "present"])
-                for row in rows:
-                    writer.writerow(row)
+    # 기존 파일이 있으면 불러와서 누적
+    if os.path.exists(TRAIN_CSV_PATH):
+        old_df = pd.read_csv(TRAIN_CSV_PATH)
+        df = pd.concat([old_df, new_df], ignore_index=True)
+    else:
+        df = new_df
 
-            completed += 1
-            if completed % 50 == 0:  # 더 자주 로깅
-                log(f"진행률: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%)")
+    # 날짜 컬럼을 datetime으로 변환 후 최근 1년(365일)치만 남김
+    if 'date' in df.columns:
+        df['date'] = pd.to_datetime(df['date'])
+        cutoff = pd.Timestamp.today() - pd.Timedelta(days=365)
+        df = df[df['date'] >= cutoff]
+
+    # 중복 제거 (lat, lon, date, species, present 기준)
+    df = df.drop_duplicates(subset=['lat', 'lon', 'date', 'species', 'present'], keep='last')
+    df = df.reset_index(drop=True)
+    df.to_csv(TRAIN_CSV_PATH, index=False)
+    log(f"학습 데이터 저장: {TRAIN_CSV_PATH} ({len(df)} rows, 최근 1년치)")
 
 def train_and_export_pmml():
     df = pd.read_csv(TRAIN_CSV_PATH)
