@@ -287,13 +287,13 @@ def get_cmems_data(lat, lon, date):
     log(f"[get_cmems_data] 결과: {lat},{lon},{date} -> {result}")
     return result
 
-def get_obis_data(lat, lon, date):
-    return []
+def get_gbif_data(lat, lon, date):
+   return []
 
 def process_point(args):
     lat, lon, date, target_species_list = args
     env = get_cmems_data(lat, lon, date)
-    observed_species = get_obis_data(lat, lon, date)
+    observed_species = get_gbif_data(lat, lon, date)
 
     rows = []
     for species in target_species_list:
