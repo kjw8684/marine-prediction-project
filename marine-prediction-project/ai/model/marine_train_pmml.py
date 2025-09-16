@@ -481,6 +481,107 @@ def train_and_export_pmml():
     sklearn2pmml(pipeline, PMML_PATH, with_repr=True)
     log(f"[train_and_export_pmml] PMML 저장 완료: {PMML_PATH}")
 
+def download_cmems_data_for_date(data_type: str, target_date: str):
+    """특정 날짜의 CMEMS 데이터 다운로드"""
+    try:
+        date_obj = datetime.strptime(target_date, '%Y-%m-%d')
+        date_str = date_obj.strftime('%Y%m%d')
+        
+        start_datetime = date_obj.strftime('%Y-%m-%dT00:00:00')
+        end_datetime = date_obj.strftime('%Y-%m-%dT23:59:59')
+        
+        datasets = get_dataset_config()
+        
+        if data_type == "physics":
+            dataset = datasets["physics"]
+            nc_path = os.path.join(CMEMS_DIR, f"cmems_phy_{date_str}.nc")
+        elif data_type == "biogeochemistry":
+            dataset = datasets["biogeochemistry"]
+            nc_path = os.path.join(CMEMS_DIR, f"cmems_bgc_{date_str}.nc")
+        else:
+            return False
+        
+        return download_with_lock(
+            nc_path=nc_path,
+            dataset_id=dataset["dataset_id"],
+            variables=dataset["variables"],
+            start_datetime=start_datetime,
+            end_datetime=end_datetime
+        )
+        
+    except Exception as e:
+        log(f"[DOWNLOAD] {data_type} {target_date} 실패: {e}")
+        return False
+
+def collect_cmems_data_for_date(target_date: str, grid_points):
+    """특정 날짜의 CMEMS 데이터를 수집하여 DataFrame으로 반환"""
+    try:
+        log(f"[CMEMS] {target_date} 데이터 수집 시작")
+        
+        date_obj = datetime.strptime(target_date, '%Y-%m-%d')
+        date_str = date_obj.strftime('%Y%m%d')
+        
+        # 1. CMEMS 데이터 다운로드
+        phy_success = download_cmems_data_for_date("physics", target_date)
+        bgc_success = download_cmems_data_for_date("biogeochemistry", target_date)
+        
+        if not (phy_success and bgc_success):
+            log(f"[CMEMS] {target_date} 다운로드 실패")
+            return pd.DataFrame()
+        
+        # 2. NetCDF 파일 로드
+        phy_nc = os.path.join(CMEMS_DIR, f"cmems_phy_{date_str}.nc")
+        bgc_nc = os.path.join(CMEMS_DIR, f"cmems_bgc_{date_str}.nc")
+        
+        phy_ds = xr.open_dataset(phy_nc)
+        bgc_ds = xr.open_dataset(bgc_nc)
+        
+        # 3. 격자점별 데이터 추출
+        cmems_data = []
+        for lat, lon in grid_points:
+            try:
+                # 물리 데이터 추출
+                phy_point = phy_ds.sel(latitude=lat, longitude=lon, method='nearest')
+                bgc_point = bgc_ds.sel(latitude=lat, longitude=lon, method='nearest')
+                
+                row_data = {
+                    'lat': lat,
+                    'lon': lon,
+                    'sea_surface_temperature': float(phy_point.thetao.values[0, 0]),
+                    'sea_surface_salinity': float(phy_point.so.values[0, 0]),
+                    'sea_surface_height': float(phy_point.zos.values[0, 0]),
+                    'mixed_layer_depth': float(phy_point.mlotst.values[0, 0]),
+                    'chlorophyll': float(bgc_point.chl.values[0, 0]),
+                    'dissolved_oxygen': float(bgc_point.o2.values[0, 0]),
+                    'nitrate': float(bgc_point.no3.values[0, 0]),
+                    'phosphate': float(bgc_point.po4.values[0, 0]),
+                    'ph': float(bgc_point.ph.values[0, 0]),
+                    'net_primary_productivity': float(bgc_point.nppv.values[0, 0])
+                }
+                
+                cmems_data.append(row_data)
+                
+            except Exception as e:
+                log(f"[CMEMS] 격자 ({lat}, {lon}) 처리 실패: {e}")
+                continue
+        
+        # 4. 리소스 정리
+        phy_ds.close()
+        bgc_ds.close()
+        cleanup_daily_nc_files(date_str)
+        
+        if cmems_data:
+            df = pd.DataFrame(cmems_data)
+            log(f"[CMEMS] {target_date} 데이터 수집 완료: {len(df)}행")
+            return df
+        else:
+            log(f"[CMEMS] {target_date} 데이터 없음")
+            return pd.DataFrame()
+            
+    except Exception as e:
+        log(f"[CMEMS] {target_date} 처리 실패: {e}")
+        return pd.DataFrame()
+
 if __name__ == "__main__":
     try:
         log("[main] 해양 생물 예측 시스템 시작")

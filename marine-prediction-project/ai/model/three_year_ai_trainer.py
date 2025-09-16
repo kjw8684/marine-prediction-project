@@ -21,14 +21,13 @@ import time
 # 경로 설정
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from real_data_system import MarineRealDataCollector
-from marine_train_pmml import MarineMLSystem
+from marine_train_pmml import collect_cmems_data_for_date
 
 class ThreeYearMarineTrainer:
     """3년치 해양 데이터 일별 학습 시스템"""
     
     def __init__(self):
         self.data_collector = MarineRealDataCollector()
-        self.ml_system = MarineMLSystem()
         self.models = {}
         
         # 체크포인트 설정
@@ -132,28 +131,13 @@ class ThreeYearMarineTrainer:
                 print(f"[SKIP] 생물 데이터 없음")
                 return False
             
-            # 2. CMEMS 환경 데이터 수집
-            print(f"[COLLECT] CMEMS 환경 데이터 수집...")
-            environmental_data = []
+            # 2. CMEMS 환경 데이터 수집 및 통합
+            print(f"[COLLECT] CMEMS 해양환경 데이터 수집...")
+            cmems_df = collect_cmems_data_for_date(date_str, self.grid_points)
             
-            for lat, lon in self.grid_points[:10]:  # 테스트용으로 10개만
-                try:
-                    env_data = self.ml_system.extract_cmems_data_for_point(lat, lon, date_str)
-                    if env_data:
-                        env_data.update({'lat': lat, 'lon': lon, 'date': date_str})
-                        environmental_data.append(env_data)
-                except Exception as e:
-                    print(f"[WARNING] CMEMS 실패 ({lat}, {lon}): {e}")
-                    continue
-            
-            # 3. 데이터 결합
-            if environmental_data:
-                env_df = pd.DataFrame(environmental_data)
-                combined_df = pd.merge(biological_df, env_df, on=['lat', 'lon', 'date'], how='inner')
-                print(f"[MERGE] 결합 완료: {len(combined_df)}행")
-            else:
-                combined_df = biological_df
-                print(f"[WARNING] CMEMS 데이터 없음 - 생물 데이터만 사용")
+            # 3. 생물 데이터와 환경 데이터 통합
+            print(f"[INTEGRATE] 생물 + 환경 데이터 통합...")
+            combined_df = self._merge_biological_and_environmental(biological_df, cmems_df)
             
             # 4. 임시 저장
             temp_filepath = self.data_collector.save_daily_data(combined_df, date_str)
@@ -168,8 +152,8 @@ class ThreeYearMarineTrainer:
             
             # 메모리 정리
             del combined_df, biological_df
-            if environmental_data:
-                del env_df, environmental_data
+            if 'cmems_df' in locals():
+                del cmems_df
             gc.collect()
             
             print(f"[SUCCESS] {date_str} 처리 완료")
@@ -178,6 +162,28 @@ class ThreeYearMarineTrainer:
         except Exception as e:
             print(f"[ERROR] {date_str} 처리 실패: {e}")
             return False
+    
+    def _merge_biological_and_environmental(self, biological_df, cmems_df):
+        """생물 데이터와 환경 데이터 통합"""
+        try:
+            if cmems_df is None or cmems_df.empty:
+                print(f"[WARNING] CMEMS 데이터 없음, 생물 데이터만 사용")
+                return biological_df
+            
+            # 위도, 경도를 기준으로 데이터 통합
+            merged_df = biological_df.merge(
+                cmems_df, 
+                on=['lat', 'lon'], 
+                how='left', 
+                suffixes=('_bio', '_env')
+            )
+            
+            print(f"[MERGE] 통합 완료: 생물 {len(biological_df)}행 + 환경 {len(cmems_df)}행 → {len(merged_df)}행")
+            return merged_df
+            
+        except Exception as e:
+            print(f"[ERROR] 데이터 통합 실패: {e}")
+            return biological_df
     
     def _incremental_training(self, daily_df, date_str):
         """점진적 모델 학습"""
