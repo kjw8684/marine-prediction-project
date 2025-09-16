@@ -7,6 +7,13 @@ from concurrent.futures import ProcessPoolExecutor
 from sklearn.ensemble import RandomForestClassifier
 from sklearn2pmml import sklearn2pmml, PMMLPipeline
 import copernicusmarine
+import threading
+import time
+import glob
+
+# 파일 다운로드 동기화를 위한 글로벌 락
+download_locks = {}
+lock_manager_lock = threading.Lock()
 
 # 주요 경로
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -196,42 +203,126 @@ def extract_var_from_grid_area(nc_path, var_name, lat_min, lat_max, lon_min, lon
         return float('nan')
 
 
-def download_with_lock(nc_path, dataset_id, variables, start_datetime, end_datetime):
-    """CMEMS 데이터 다운로드"""
-    # 이미 파일이 존재하면 스킵
-    if os.path.exists(nc_path):
-        log(f"[download_with_lock] 파일 이미 존재: {nc_path}")
-        return True
+def get_file_lock(file_path):
+    """파일별 락 객체 반환"""
+    with lock_manager_lock:
+        if file_path not in download_locks:
+            download_locks[file_path] = threading.Lock()
+        return download_locks[file_path]
 
+
+def cleanup_duplicate_nc_files(date_str):
+    """중복 다운로드된 .nc 파일들 정리 (번호가 붙은 파일들 삭제)"""
     try:
-        log(f"[download_with_lock] 다운로드 시작: {dataset_id}")
-        os.makedirs(os.path.dirname(nc_path), exist_ok=True)
-
-        copernicusmarine.subset(
-            dataset_id=dataset_id,
-            variables=variables,
-            start_datetime=start_datetime,
-            end_datetime=end_datetime,
-            minimum_longitude=124.0,
-            maximum_longitude=132.0,
-            minimum_latitude=33.0,
-            maximum_latitude=39.0,
-            output_filename=nc_path,
-            overwrite=False
-        )
-
-        if os.path.exists(nc_path):
-            log(f"[download_with_lock] 다운로드 완료: {nc_path}")
-            return True
-        else:
-            log(f"[download_with_lock] 다운로드 실패: 파일이 생성되지 않음")
-            return False
-
+        patterns = [
+            os.path.join(CMEMS_DIR, f"cmems_phy_{date_str}_*.nc"),
+            os.path.join(CMEMS_DIR, f"cmems_bgc_{date_str}_*.nc"),
+        ]
+        
+        cleaned_files = []
+        for pattern in patterns:
+            duplicate_files = glob.glob(pattern)
+            for dup_file in duplicate_files:
+                try:
+                    os.remove(dup_file)
+                    cleaned_files.append(os.path.basename(dup_file))
+                    log(f"[cleanup_duplicates] 중복 파일 삭제: {os.path.basename(dup_file)}")
+                except Exception as e:
+                    log(f"[cleanup_duplicates] 삭제 실패: {os.path.basename(dup_file)} - {e}")
+        
+        if cleaned_files:
+            log(f"[cleanup_duplicates] {date_str}: {len(cleaned_files)}개 중복 파일 정리 완료")
+            
     except Exception as e:
-        log(f"[download_with_lock] 다운로드 실패: {nc_path} - {e}")
+        log(f"[cleanup_duplicates] 오류: {date_str} - {e}")
+
+
+def cleanup_daily_nc_files(date_str):
+    """하루치 데이터 처리 완료 후 .nc 파일들을 삭제하여 메모리 절약"""
+    try:
+        phy_nc = os.path.join(CMEMS_DIR, f"cmems_phy_{date_str}.nc")
+        bgc_nc = os.path.join(CMEMS_DIR, f"cmems_bgc_{date_str}.nc")
+        
+        deleted_files = []
+        total_size_saved = 0
+        
+        for nc_file in [phy_nc, bgc_nc]:
+            if os.path.exists(nc_file):
+                try:
+                    file_size = os.path.getsize(nc_file)
+                    os.remove(nc_file)
+                    deleted_files.append(os.path.basename(nc_file))
+                    total_size_saved += file_size
+                    log(f"[cleanup] 삭제 완료: {os.path.basename(nc_file)} ({file_size/1024/1024:.1f}MB)")
+                except Exception as e:
+                    log(f"[cleanup] 삭제 실패: {os.path.basename(nc_file)} - {e}")
+        
+        if deleted_files:
+            log(f"[cleanup] {date_str} 정리 완료: {len(deleted_files)}개 파일, {total_size_saved/1024/1024:.1f}MB 절약")
+        else:
+            log(f"[cleanup] {date_str}: 삭제할 파일 없음")
+            
+    except Exception as e:
+        log(f"[cleanup] 오류: {date_str} - {e}")
+
+
+def download_with_lock(nc_path, dataset_id, variables, start_datetime, end_datetime):
+    """CMEMS 데이터 다운로드 - 파일 잠금으로 중복 다운로드 방지"""
+    
+    # 파일별 락 획득
+    file_lock = get_file_lock(nc_path)
+    
+    with file_lock:
+        # 락 내에서 다시 파일 존재 여부 확인
         if os.path.exists(nc_path):
-            os.remove(nc_path)
-        return False
+            log(f"[download_with_lock] 파일 이미 존재: {nc_path}")
+            return True
+            
+        # 중복 파일들이 있다면 먼저 정리
+        date_str = os.path.basename(nc_path).replace("cmems_phy_", "").replace("cmems_bgc_", "").replace(".nc", "")
+        cleanup_duplicate_nc_files(date_str)
+
+        try:
+            log(f"[download_with_lock] 다운로드 시작: {dataset_id}")
+            os.makedirs(os.path.dirname(nc_path), exist_ok=True)
+
+            # 임시 파일명으로 다운로드
+            temp_nc_path = nc_path + ".temp"
+            
+            copernicusmarine.subset(
+                dataset_id=dataset_id,
+                variables=variables,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                minimum_longitude=124.0,
+                maximum_longitude=132.0,
+                minimum_latitude=33.0,
+                maximum_latitude=39.0,
+                output_filename=temp_nc_path,
+                overwrite=True  # 임시 파일은 덮어쓰기 허용
+            )
+
+            # 다운로드 완료 후 원래 이름으로 이동
+            if os.path.exists(temp_nc_path):
+                os.rename(temp_nc_path, nc_path)
+                log(f"[download_with_lock] 다운로드 완료: {nc_path}")
+                return True
+            else:
+                log(f"[download_with_lock] 다운로드 실패: 임시 파일이 생성되지 않음")
+                return False
+
+        except Exception as e:
+            log(f"[download_with_lock] 다운로드 실패: {nc_path} - {e}")
+            
+            # 임시 파일 정리
+            temp_nc_path = nc_path + ".temp"
+            try:
+                if os.path.exists(temp_nc_path):
+                    os.remove(temp_nc_path)
+            except Exception:
+                pass
+                
+            return False
 
 def get_cmems_data_for_grid_cell(center_lat, center_lon, date):
     """0.5도 격자 셀에서 CMEMS 데이터 추출 (격자 평균값)"""
