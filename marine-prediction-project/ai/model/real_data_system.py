@@ -33,6 +33,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 피쳐 이름 매핑 함수 (학습과 예측 간 일관성 보장)
+def standardize_feature_names(data_dict):
+    """데이터 딕셔너리의 피쳐 이름을 표준화"""
+    name_mapping = {
+        # 환경 변수 매핑
+        'thetao': 'temperature',
+        'so': 'salinity',
+        'o2': 'dissolved_oxygen',
+        'chl': 'chlorophyll_a',
+        'phyc': 'phytoplankton',
+        'zos': 'sea_level',
+        'uo': 'u_velocity',
+        'vo': 'v_velocity',
+        'siconc': 'sea_ice',
+        'mlotst': 'mixed_layer_depth',
+        # 생물학적 변수는 유지
+    }
+
+    standardized = {}
+    for key, value in data_dict.items():
+        # 매핑된 이름이 있으면 사용, 없으면 원래 이름 유지
+        new_key = name_mapping.get(key, key)
+        standardized[new_key] = value
+
+    return standardized
+
 # CMEMS 패키지 가용성 확인
 try:
     import copernicusmarine
@@ -54,55 +80,161 @@ TARGET_SPECIES = [
     'Chaetodon nippon'     # 나비고기
 ]
 
-# 관측 데이터가 없을 때 사용할 기본값 (환경 조건별 예상 서식 밀도)
-SPECIES_BASELINE_VALUES = {
-    'Aurelia aurita': {
-        'default_density': 0.3,  # 기본 서식 밀도
-        'weight': 0.5,           # 중간 가중치 (실제 데이터의 50%)
-        'temp_preference': [15, 25],  # 선호 수온 범위
-        'depth_preference': [0, 50]   # 선호 수심 범위
-    },
-    'Chrysaora pacifica': {
-        'default_density': 0.2,
-        'weight': 0.5,
-        'temp_preference': [18, 28],
-        'depth_preference': [0, 100]
-    },
-    'Scomber japonicus': {
-        'default_density': 0.4,
-        'weight': 0.6,           # 상업성 어종이므로 조금 더 높은 가중치
-        'temp_preference': [12, 22],
-        'depth_preference': [10, 200]
-    },
-    'Engraulis japonicus': {
-        'default_density': 0.5,
-        'weight': 0.6,           # 멸치도 중요한 어종
-        'temp_preference': [14, 24],
-        'depth_preference': [0, 150]
-    },
-    'Todarodes pacificus': {
+# 과학적 연구 기반 종별 환경 선호도 및 생태학적 특성
+SPECIES_ENVIRONMENTAL_PROFILES = {
+    'Aurelia aurita': {  # 보름달물해파리
         'default_density': 0.3,
         'weight': 0.5,
-        'temp_preference': [10, 20],
-        'depth_preference': [50, 300]
+        'temp_range': [8, 28],      # 생존 가능 수온
+        'temp_optimal': [15, 22],   # 최적 수온
+        'depth_range': [0, 200],    # 생존 가능 수심
+        'depth_optimal': [5, 30],   # 최적 서식 수심
+        'salinity_range': [15, 40], # 생존 가능 염분
+        'salinity_optimal': [28, 35], # 최적 염분
+        'dissolved_oxygen_min': 3.0,  # 최소 용존산소 (mg/L)
+        'chlorophyll_preference': [0.5, 8.0],  # 선호 엽록소 농도
+        'seasonal_factor': {  # 계절별 활성도
+            'spring': 1.2,    # 번식기
+            'summer': 1.0,
+            'autumn': 0.8,
+            'winter': 0.4
+        },
+        'migration_behavior': 'vertical'  # 일주기 수직이동
     },
-    'Trachurus japonicus': {
-        'default_density': 0.35,
+    'Chrysaora pacifica': {  # 태평양해파리
+        'default_density': 0.2,
         'weight': 0.5,
-        'temp_preference': [16, 26],
-        'depth_preference': [20, 250]
+        'temp_range': [12, 32],
+        'temp_optimal': [18, 26],
+        'depth_range': [0, 300],
+        'depth_optimal': [10, 80],
+        'salinity_range': [20, 38],
+        'salinity_optimal': [30, 35],
+        'dissolved_oxygen_min': 2.5,
+        'chlorophyll_preference': [1.0, 10.0],
+        'seasonal_factor': {
+            'spring': 0.6,
+            'summer': 1.3,    # 대발생 시기
+            'autumn': 1.1,
+            'winter': 0.3
+        },
+        'migration_behavior': 'passive_drift'
     },
-    'Sardinops melanostictus': {
+    'Scomber japonicus': {  # 고등어
         'default_density': 0.4,
-        'weight': 0.6,           # 정어리도 중요한 어종
-        'temp_preference': [13, 23],
-        'depth_preference': [0, 100]
+        'weight': 0.7,  # 상업성 어종
+        'temp_range': [8, 28],
+        'temp_optimal': [12, 20],
+        'depth_range': [10, 500],
+        'depth_optimal': [20, 200],
+        'salinity_range': [32, 36],
+        'salinity_optimal': [33.5, 35.0],
+        'dissolved_oxygen_min': 4.0,
+        'chlorophyll_preference': [0.3, 5.0],
+        'seasonal_factor': {
+            'spring': 1.3,    # 북상 회유
+            'summer': 1.0,
+            'autumn': 1.2,    # 남하 회유
+            'winter': 0.4     # 월동장
+        },
+        'migration_behavior': 'active_schooling',
+        'current_preference': [0.1, 0.5]  # 선호 해류 속도 (m/s)
     },
-    'Chaetodon nippon': {
+    'Engraulis japonicus': {  # 멸치
+        'default_density': 0.5,
+        'weight': 0.7,
+        'temp_range': [10, 28],
+        'temp_optimal': [14, 22],
+        'depth_range': [0, 200],
+        'depth_optimal': [10, 80],
+        'salinity_range': [30, 36],
+        'salinity_optimal': [32, 35],
+        'dissolved_oxygen_min': 3.5,
+        'chlorophyll_preference': [1.0, 15.0],  # 먹이 풍부 지역 선호
+        'seasonal_factor': {
+            'spring': 1.4,    # 산란기
+            'summer': 1.1,
+            'autumn': 0.9,
+            'winter': 0.5
+        },
+        'migration_behavior': 'coastal_spawning'
+    },
+    'Todarodes pacificus': {  # 살오징어
+        'default_density': 0.3,
+        'weight': 0.6,
+        'temp_range': [5, 25],
+        'temp_optimal': [10, 18],
+        'depth_range': [50, 800],
+        'depth_optimal': [100, 400],
+        'salinity_range': [33, 36],
+        'salinity_optimal': [34, 35.5],
+        'dissolved_oxygen_min': 3.0,
+        'chlorophyll_preference': [0.2, 3.0],
+        'seasonal_factor': {
+            'spring': 0.8,
+            'summer': 1.0,
+            'autumn': 1.3,    # 산란회유
+            'winter': 1.1
+        },
+        'migration_behavior': 'deep_water_spawning',
+        'thermocline_preference': True  # 수온약층 선호
+    },
+    'Trachurus japonicus': {  # 전갱이
+        'default_density': 0.35,
+        'weight': 0.6,
+        'temp_range': [10, 30],
+        'temp_optimal': [16, 24],
+        'depth_range': [20, 400],
+        'depth_optimal': [50, 250],
+        'salinity_range': [32, 36],
+        'salinity_optimal': [33, 35],
+        'dissolved_oxygen_min': 4.0,
+        'chlorophyll_preference': [0.5, 8.0],
+        'seasonal_factor': {
+            'spring': 1.2,
+            'summer': 1.0,
+            'autumn': 1.1,
+            'winter': 0.6
+        },
+        'migration_behavior': 'continental_shelf'
+    },
+    'Sardinops melanostictus': {  # 정어리
+        'default_density': 0.4,
+        'weight': 0.7,
+        'temp_range': [8, 26],
+        'temp_optimal': [13, 20],
+        'depth_range': [0, 150],
+        'depth_optimal': [10, 80],
+        'salinity_range': [31, 36],
+        'salinity_optimal': [33, 35],
+        'dissolved_oxygen_min': 3.5,
+        'chlorophyll_preference': [2.0, 20.0],  # 부영양화 지역 선호
+        'seasonal_factor': {
+            'spring': 1.3,
+            'summer': 1.0,
+            'autumn': 0.8,
+            'winter': 0.4
+        },
+        'migration_behavior': 'coastal_upwelling'
+    },
+    'Chaetodon nippon': {  # 나비고기
         'default_density': 0.15,
-        'weight': 0.4,           # 관상어종은 조금 낮게
-        'temp_preference': [20, 30],
-        'depth_preference': [5, 50]
+        'weight': 0.4,
+        'temp_range': [15, 32],
+        'temp_optimal': [20, 28],
+        'depth_range': [5, 100],
+        'depth_optimal': [10, 50],
+        'salinity_range': [32, 36],
+        'salinity_optimal': [34, 35.5],
+        'dissolved_oxygen_min': 5.0,
+        'chlorophyll_preference': [0.1, 2.0],
+        'seasonal_factor': {
+            'spring': 0.8,
+            'summer': 1.2,
+            'autumn': 1.0,
+            'winter': 0.7
+        },
+        'migration_behavior': 'reef_associated'
     }
 }
 
@@ -290,6 +422,10 @@ class MarineRealDataCollector:
 
                         # 환경 + 생물 데이터 통합
                         combined_data = {**env_data, **biological_data}
+
+                        # 피쳐 이름 표준화
+                        combined_data = standardize_feature_names(combined_data)
+
                         combined_data['target_date'] = target_date
                         combined_data['grid_point_id'] = i
 
@@ -438,12 +574,12 @@ class MarineRealDataCollector:
                 biological_data[f"{species.replace(' ', '_')}_count"] = species_data['observation_count']
                 logger.info(f" {species}: 실제 관측 데이터 {species_data['observation_count']}건")
             else:
-                # 관측 데이터가 없는 경우 기본값 사용
-                baseline = SPECIES_BASELINE_VALUES[species]
-                biological_data[f"{species.replace(' ', '_')}_density"] = baseline['default_density']
+                # 관측 데이터가 없는 경우 환경 기반 예측 사용
+                env_prediction = self.predict_species_density_from_environment(species, lat, lon)
+                biological_data[f"{species.replace(' ', '_')}_density"] = env_prediction['density']
                 biological_data[f"{species.replace(' ', '_')}_count"] = 0
-                biological_data[f"{species.replace(' ', '_')}_weight"] = baseline['weight']
-                logger.info(f" {species}: 기본값 사용 (density={baseline['default_density']})")
+                biological_data[f"{species.replace(' ', '_')}_weight"] = env_prediction['confidence']
+                logger.info(f" {species}: 환경 기반 예측 (density={env_prediction['density']:.3f}, confidence={env_prediction['confidence']:.2f})")
 
         return biological_data
 
@@ -482,17 +618,17 @@ class MarineRealDataCollector:
                     logger.warning(f"  {species} 지역 데이터 수집 실패: {e}")
                     all_species_observations[species] = []
 
-        # 모든 격자점을 환경/거리 기반 적응형 가중치로 초기화
+        # 모든 격자점을 환경 기반 예측으로 초기화
         for grid_point in grid_points:
             lat, lon = grid_point
             biological_data = {}
             for species in TARGET_SPECIES:
-                baseline = SPECIES_BASELINE_VALUES[species]
-                # 환경 조건 + 거리 기반 적응형 가중치 계산
-                adaptive_weight = self._calculate_adaptive_weight(species, lat, lon, all_species_observations.get(species, []))
-                biological_data[f"{species.replace(' ', '_')}_density"] = baseline['default_density']
+                # 환경 기반 밀도 예측 사용
+                env_prediction = self.predict_species_density_from_environment(species, lat, lon, date)
+                biological_data[f"{species.replace(' ', '_')}_density"] = env_prediction['density']
                 biological_data[f"{species.replace(' ', '_')}_count"] = 0
-                biological_data[f"{species.replace(' ', '_')}_weight"] = adaptive_weight
+                biological_data[f"{species.replace(' ', '_')}_weight"] = env_prediction['confidence']
+                biological_data[f"{species.replace(' ', '_')}_env_method"] = env_prediction['method']
             grid_biological_data[grid_point] = biological_data
 
         # 실제 관측 데이터가 있는 격자점만 업데이트
@@ -531,13 +667,13 @@ class MarineRealDataCollector:
                                              radius_km: float = 25) -> Dict[str, Any]:
         """개별 격자점 생물 데이터 반환 (배치 처리된 데이터에서 추출)"""
 
-        # 이 함수는 이제 배치 처리된 결과를 사용하므로 기본값만 반환
+        # 이 함수는 이제 배치 처리된 결과를 사용하므로 환경 기반 예측만 반환
         biological_data = {}
         for species in TARGET_SPECIES:
-            baseline = SPECIES_BASELINE_VALUES[species]
-            biological_data[f"{species.replace(' ', '_')}_density"] = baseline['default_density']
+            env_prediction = self.predict_species_density_from_environment(species, lat, lon)
+            biological_data[f"{species.replace(' ', '_')}_density"] = env_prediction['density']
             biological_data[f"{species.replace(' ', '_')}_count"] = 0
-            biological_data[f"{species.replace(' ', '_')}_weight"] = baseline['weight']
+            biological_data[f"{species.replace(' ', '_')}_weight"] = env_prediction['confidence']
 
         return biological_data
 
@@ -745,14 +881,14 @@ class MarineRealDataCollector:
 
         return observations
 
-    def _calculate_adaptive_weight(self, species: str, lat: float, lon: float, observations: List[Dict]) -> float:
-        """환경 조건과 거리 기반 적응형 가중치 계산"""
+    def _calculate_adaptive_weight(self, species: str, lat: float, lon: float, observations: List[Dict], current_date: str = None) -> float:
+        """환경 조건과 거리 기반 적응형 가중치 계산 (계절성 포함)"""
 
-        baseline = SPECIES_BASELINE_VALUES[species]
-        base_weight = baseline['weight']
+        profile = SPECIES_ENVIRONMENTAL_PROFILES[species]
+        base_weight = profile['weight']
 
-        # 1. 환경 조건 적합성 평가
-        env_suitability = self._evaluate_environmental_suitability(species, lat, lon)
+        # 1. 환경 조건 적합성 평가 (계절성 포함)
+        env_suitability = self._evaluate_environmental_suitability(species, lat, lon, current_date)
 
         # 2. 가장 가까운 실제 관측 데이터까지의 거리
         distance_factor = self._calculate_distance_factor(lat, lon, observations)
@@ -761,64 +897,209 @@ class MarineRealDataCollector:
         # 환경 적합성 * 거리 보정 * 기본 가중치
         adaptive_weight = base_weight * env_suitability * distance_factor
 
-        # 최소/최대 가중치 제한 (0.2 ~ 0.8)
-        adaptive_weight = max(0.2, min(0.8, adaptive_weight))
+        # 최소/최대 가중치 제한 (0.2 ~ 1.0) - 환경이 매우 좋을 때는 높은 가중치 허용
+        adaptive_weight = max(0.2, min(1.0, adaptive_weight))
 
         return adaptive_weight
 
-    def _evaluate_environmental_suitability(self, species: str, lat: float, lon: float) -> float:
-        """환경 조건 기반 서식 적합성 평가 (1.0 = 최적, 0.5 = 보통, 0.3 = 부적합)"""
+    def _evaluate_environmental_suitability(self, species: str, lat: float, lon: float, current_date: str = None) -> float:
+        """고도화된 환경 조건 기반 서식 적합성 평가 (과학적 연구 기반)"""
 
         try:
             # CMEMS 데이터에서 현재 환경 조건 가져오기
             cmems_data = self._fetch_cmems_data(lat, lon)
             if not cmems_data:
-                return 0.8  # 환경 데이터가 없으면 보통 적합성
+                return 0.7  # 환경 데이터가 없으면 중간 적합성
 
-            baseline = SPECIES_BASELINE_VALUES[species]
-            temp_pref = baseline['temp_preference']  # [min_temp, max_temp]
-            depth_pref = baseline['depth_preference']  # [min_depth, max_depth]
+            # 새로운 환경 프로파일 사용
+            if species not in SPECIES_ENVIRONMENTAL_PROFILES:
+                logger.warning(f"종 {species}의 환경 프로파일이 없습니다.")
+                return 0.7
 
-            # 수온 적합성 평가
-            temp_suit = 1.0  # 기본값
-            if 'thetao' in cmems_data:
-                current_temp = cmems_data['thetao']
-                if temp_pref[0] <= current_temp <= temp_pref[1]:
-                    temp_suit = 1.0  # 최적
-                elif abs(current_temp - sum(temp_pref)/2) <= 3:  # 선호 범위 ±3도
-                    temp_suit = 0.8  # 적합
-                else:
-                    temp_suit = 0.5  # 부적합
+            profile = SPECIES_ENVIRONMENTAL_PROFILES[species]
+            suitability_scores = []
 
-            # 수심 적합성 평가 (추정 수심 사용)
-            depth_suit = 1.0  # 기본값
-            estimated_depth = abs(self._estimate_depth(lat, lon))  # 절댓값 사용
-            if depth_pref[0] <= estimated_depth <= depth_pref[1]:
-                depth_suit = 1.0  # 최적
-            elif abs(estimated_depth - sum(depth_pref)/2) <= 50:  # 선호 범위 ±50m
-                depth_suit = 0.8  # 적합
-            else:
-                depth_suit = 0.5  # 부적합
+            # 1. 수온 적합성 평가 (가중치: 30%)
+            temp_suitability = self._calculate_temperature_suitability(cmems_data, profile)
+            suitability_scores.append(('temperature', temp_suitability, 0.30))
 
-            # 염분 적합성 (해양생물은 일반적으로 30-35 psu 선호)
-            salinity_suit = 1.0  # 기본값
-            if 'so' in cmems_data:
-                salinity = cmems_data['so']
-                if 30 <= salinity <= 35:
-                    salinity_suit = 1.0
-                elif 25 <= salinity <= 40:
-                    salinity_suit = 0.8
-                else:
-                    salinity_suit = 0.6
+            # 2. 수심 적합성 평가 (가중치: 25%)
+            depth_suitability = self._calculate_depth_suitability(lat, lon, profile)
+            suitability_scores.append(('depth', depth_suitability, 0.25))
 
-            # 종합 환경 적합성 (평균)
-            overall_suitability = (temp_suit + depth_suit + salinity_suit) / 3
+            # 3. 염분 적합성 평가 (가중치: 20%)
+            salinity_suitability = self._calculate_salinity_suitability(cmems_data, profile)
+            suitability_scores.append(('salinity', salinity_suitability, 0.20))
 
-            return overall_suitability
+            # 4. 용존산소 적합성 평가 (가중치: 15%)
+            oxygen_suitability = self._calculate_oxygen_suitability(cmems_data, profile)
+            suitability_scores.append(('oxygen', oxygen_suitability, 0.15))
+
+            # 5. 엽록소 농도 적합성 평가 (먹이 풍부도, 가중치: 10%)
+            chlorophyll_suitability = self._calculate_chlorophyll_suitability(cmems_data, profile)
+            suitability_scores.append(('chlorophyll', chlorophyll_suitability, 0.10))
+
+            # 가중 평균 계산
+            weighted_sum = sum(score * weight for _, score, weight in suitability_scores)
+
+            # 계절적 보정 적용
+            seasonal_factor = self._get_seasonal_factor(species, current_date)
+            final_suitability = weighted_sum * seasonal_factor
+
+            # 범위 제한 (0.1 ~ 1.0)
+            final_suitability = max(0.1, min(1.0, final_suitability))
+
+            logger.debug(f"{species} 환경 적합성: {final_suitability:.3f} (계절보정: {seasonal_factor:.2f})")
+
+            return final_suitability
 
         except Exception as e:
             logger.debug(f"환경 적합성 평가 실패 ({species}): {e}")
-            return 0.7  # 오류 시 보통 적합성
+            return 0.7  # 기본값
+
+    def _calculate_temperature_suitability(self, cmems_data: dict, profile: dict) -> float:
+        """수온 기반 서식 적합성 계산"""
+        if 'cmems_thetao' not in cmems_data and 'thetao' not in cmems_data:
+            return 0.8  # 수온 데이터 없으면 중간값
+
+        temp = cmems_data.get('cmems_thetao') or cmems_data.get('thetao', 20)
+
+        temp_optimal = profile['temp_optimal']
+        temp_range = profile['temp_range']
+
+        # 최적 범위 내
+        if temp_optimal[0] <= temp <= temp_optimal[1]:
+            return 1.0
+
+        # 생존 가능 범위 내
+        elif temp_range[0] <= temp <= temp_range[1]:
+            # 최적 범위로부터의 거리에 따라 선형 감소
+            optimal_center = sum(temp_optimal) / 2
+            distance_from_optimal = abs(temp - optimal_center)
+            max_distance = max(abs(temp_range[0] - optimal_center),
+                             abs(temp_range[1] - optimal_center))
+            return 1.0 - (distance_from_optimal / max_distance) * 0.6  # 0.4 ~ 1.0
+
+        # 생존 불가능 범위
+        else:
+            return 0.1
+
+    def _calculate_depth_suitability(self, lat: float, lon: float, profile: dict) -> float:
+        """수심 기반 서식 적합성 계산"""
+        estimated_depth = abs(self._estimate_depth(lat, lon))
+
+        depth_optimal = profile['depth_optimal']
+        depth_range = profile['depth_range']
+
+        # 최적 범위 내
+        if depth_optimal[0] <= estimated_depth <= depth_optimal[1]:
+            return 1.0
+
+        # 생존 가능 범위 내
+        elif depth_range[0] <= estimated_depth <= depth_range[1]:
+            optimal_center = sum(depth_optimal) / 2
+            distance_from_optimal = abs(estimated_depth - optimal_center)
+            max_distance = max(abs(depth_range[0] - optimal_center),
+                             abs(depth_range[1] - optimal_center))
+            return 1.0 - (distance_from_optimal / max_distance) * 0.5  # 0.5 ~ 1.0
+
+        # 생존 불가능 범위
+        else:
+            return 0.2
+
+    def _calculate_salinity_suitability(self, cmems_data: dict, profile: dict) -> float:
+        """염분 기반 서식 적합성 계산"""
+        if 'cmems_so' not in cmems_data and 'so' not in cmems_data:
+            return 0.8  # 염분 데이터 없으면 중간값
+
+        salinity = cmems_data.get('cmems_so') or cmems_data.get('so', 34)
+
+        salinity_optimal = profile['salinity_optimal']
+        salinity_range = profile['salinity_range']
+
+        # 최적 범위 내
+        if salinity_optimal[0] <= salinity <= salinity_optimal[1]:
+            return 1.0
+
+        # 생존 가능 범위 내
+        elif salinity_range[0] <= salinity <= salinity_range[1]:
+            optimal_center = sum(salinity_optimal) / 2
+            distance_from_optimal = abs(salinity - optimal_center)
+            max_distance = max(abs(salinity_range[0] - optimal_center),
+                             abs(salinity_range[1] - optimal_center))
+            return 1.0 - (distance_from_optimal / max_distance) * 0.4  # 0.6 ~ 1.0
+
+        # 생존 불가능 범위
+        else:
+            return 0.3
+
+    def _calculate_oxygen_suitability(self, cmems_data: dict, profile: dict) -> float:
+        """용존산소 기반 서식 적합성 계산"""
+        if 'cmems_o2' not in cmems_data and 'o2' not in cmems_data:
+            return 0.8  # 산소 데이터 없으면 중간값
+
+        oxygen = cmems_data.get('cmems_o2') or cmems_data.get('o2', 5.0)
+        min_oxygen = profile['dissolved_oxygen_min']
+
+        if oxygen >= min_oxygen * 1.5:  # 충분한 산소
+            return 1.0
+        elif oxygen >= min_oxygen:  # 최소 요구량 이상
+            return 0.7 + 0.3 * ((oxygen - min_oxygen) / (min_oxygen * 0.5))
+        else:  # 산소 부족
+            return max(0.2, 0.7 * (oxygen / min_oxygen))
+
+    def _calculate_chlorophyll_suitability(self, cmems_data: dict, profile: dict) -> float:
+        """엽록소 농도 기반 먹이 풍부도 적합성 계산"""
+        if 'cmems_chl' not in cmems_data and 'chl' not in cmems_data and 'cmems_nppv' not in cmems_data:
+            return 0.8  # 엽록소 데이터 없으면 중간값
+
+        # 엽록소 직접 측정값 또는 1차 생산량으로부터 추정
+        chlorophyll = (cmems_data.get('cmems_chl') or
+                      cmems_data.get('chl') or
+                      (cmems_data.get('cmems_nppv', 1.0) * 0.1))  # nppv로부터 추정
+
+        chl_preference = profile['chlorophyll_preference']
+
+        # 선호 범위 내
+        if chl_preference[0] <= chlorophyll <= chl_preference[1]:
+            return 1.0
+
+        # 범위 밖
+        elif chlorophyll < chl_preference[0]:
+            # 너무 빈영양
+            ratio = chlorophyll / chl_preference[0]
+            return max(0.3, 0.7 + 0.3 * ratio)
+        else:
+            # 너무 부영양 (일부 종은 선호, 일부는 기피)
+            if chlorophyll > chl_preference[1] * 3:  # 너무 과도함
+                return 0.4
+            else:
+                return 0.7  # 약간 부영양은 괜찮음
+
+    def _get_seasonal_factor(self, species: str, current_date: str = None) -> float:
+        """계절별 활성도 보정 인자"""
+        if not current_date or species not in SPECIES_ENVIRONMENTAL_PROFILES:
+            return 1.0
+
+        try:
+            date_obj = datetime.strptime(current_date, '%Y-%m-%d')
+            month = date_obj.month
+
+            # 계절 구분 (북반구 기준)
+            if month in [3, 4, 5]:
+                season = 'spring'
+            elif month in [6, 7, 8]:
+                season = 'summer'
+            elif month in [9, 10, 11]:
+                season = 'autumn'
+            else:
+                season = 'winter'
+
+            profile = SPECIES_ENVIRONMENTAL_PROFILES[species]
+            return profile['seasonal_factor'].get(season, 1.0)
+
+        except Exception:
+            return 1.0
 
     def _calculate_distance_factor(self, lat: float, lon: float, observations: List[Dict]) -> float:
         """가장 가까운 실제 관측 데이터까지의 거리 기반 보정 인수"""
@@ -841,6 +1122,159 @@ class MarineRealDataCollector:
             return 0.8  # 가중치 감소
         else:  # 100km 초과
             return 0.6  # 많이 감소
+
+    def predict_species_density_from_environment(self, species: str, lat: float, lon: float, current_date: str = None) -> Dict[str, Any]:
+        """환경 조건만으로 종 밀도 예측 (과학적 모델 기반)"""
+
+        try:
+            if species not in SPECIES_ENVIRONMENTAL_PROFILES:
+                logger.warning(f"종 {species}의 환경 프로파일이 없습니다.")
+                return {'density': 0.1, 'confidence': 0.3, 'method': 'fallback'}
+
+            profile = SPECIES_ENVIRONMENTAL_PROFILES[species]
+
+            # 1. 환경 적합성 평가
+            env_suitability = self._evaluate_environmental_suitability(species, lat, lon, current_date)
+
+            # 2. 기본 밀도에 환경 적합성 곱하기
+            base_density = profile['default_density']
+            predicted_density = base_density * env_suitability
+
+            # 3. 서식지 특성별 보정
+            habitat_multiplier = self._calculate_habitat_multiplier(species, lat, lon, profile)
+            predicted_density *= habitat_multiplier
+
+            # 4. 계절적 변동 적용 (이미 env_suitability에 포함되어 있지만 추가 보정)
+            seasonal_multiplier = self._get_seasonal_density_multiplier(species, current_date)
+            predicted_density *= seasonal_multiplier
+
+            # 5. 결과 범위 제한 (0.01 ~ 1.5)
+            predicted_density = max(0.01, min(1.5, predicted_density))
+
+            # 6. 신뢰도 계산
+            confidence = self._calculate_prediction_confidence(env_suitability, profile)
+
+            return {
+                'density': predicted_density,
+                'confidence': confidence,
+                'env_suitability': env_suitability,
+                'habitat_multiplier': habitat_multiplier,
+                'seasonal_multiplier': seasonal_multiplier,
+                'method': 'environmental_model'
+            }
+
+        except Exception as e:
+            logger.warning(f"환경 기반 밀도 예측 실패 ({species}): {e}")
+            return {'density': 0.1, 'confidence': 0.3, 'method': 'error_fallback'}
+
+    def _calculate_habitat_multiplier(self, species: str, lat: float, lon: float, profile: dict) -> float:
+        """서식지 특성별 밀도 보정 인자"""
+
+        multiplier = 1.0
+
+        try:
+            # 연안 거리 기반 보정
+            coast_distance = self._calculate_distance_to_coast(lat, lon)
+            migration_behavior = profile.get('migration_behavior', 'unknown')
+
+            if migration_behavior == 'coastal_spawning':  # 연안 산란형 (멸치 등)
+                if coast_distance < 30:  # 30km 이내
+                    multiplier *= 1.3
+                elif coast_distance > 100:  # 100km 이상
+                    multiplier *= 0.6
+
+            elif migration_behavior == 'deep_water_spawning':  # 심해 산란형 (살오징어 등)
+                if coast_distance > 50:  # 50km 이상
+                    multiplier *= 1.2
+                elif coast_distance < 20:  # 20km 이내
+                    multiplier *= 0.7
+
+            elif migration_behavior == 'continental_shelf':  # 대륙붕 선호 (전갱이 등)
+                estimated_depth = abs(self._estimate_depth(lat, lon))
+                if 50 <= estimated_depth <= 200:  # 대륙붕 지역
+                    multiplier *= 1.4
+                elif estimated_depth > 500:  # 너무 깊음
+                    multiplier *= 0.5
+
+            elif migration_behavior == 'reef_associated':  # 암초 관련 (나비고기 등)
+                if coast_distance < 20 and abs(self._estimate_depth(lat, lon)) < 50:
+                    multiplier *= 1.5  # 연안 얕은 지역
+                else:
+                    multiplier *= 0.4  # 부적합한 서식지
+
+            # 수온약층 선호 종 보정
+            if profile.get('thermocline_preference', False):
+                # 수온약층이 있을 것으로 예상되는 지역에서 밀도 증가
+                estimated_depth = abs(self._estimate_depth(lat, lon))
+                if 100 <= estimated_depth <= 300:  # 수온약층 형성 지역
+                    multiplier *= 1.3
+
+        except Exception as e:
+            logger.debug(f"서식지 보정 계산 실패 ({species}): {e}")
+
+        return max(0.3, min(2.0, multiplier))
+
+    def _get_seasonal_density_multiplier(self, species: str, current_date: str = None) -> float:
+        """계절별 밀도 변동 보정 (번식기, 회유기 등)"""
+
+        if not current_date or species not in SPECIES_ENVIRONMENTAL_PROFILES:
+            return 1.0
+
+        try:
+            date_obj = datetime.strptime(current_date, '%Y-%m-%d')
+            month = date_obj.month
+
+            profile = SPECIES_ENVIRONMENTAL_PROFILES[species]
+            migration_behavior = profile.get('migration_behavior', 'unknown')
+
+            # 종별 세부 계절 패턴
+            if species == 'Scomber japonicus':  # 고등어
+                if month in [4, 5, 6]:  # 북상 회유기
+                    return 1.5
+                elif month in [9, 10, 11]:  # 남하 회유기
+                    return 1.3
+                elif month in [12, 1, 2]:  # 월동기
+                    return 0.3
+
+            elif species == 'Engraulis japonicus':  # 멸치
+                if month in [4, 5, 6]:  # 산란기
+                    return 1.6
+                elif month in [7, 8]:  # 유어 성장기
+                    return 1.2
+                elif month in [12, 1, 2]:  # 저활성기
+                    return 0.4
+
+            elif species == 'Todarodes pacificus':  # 살오징어
+                if month in [10, 11, 12]:  # 산란회유기
+                    return 1.4
+                elif month in [1, 2, 3]:  # 성숙기
+                    return 1.1
+
+            elif species == 'Chrysaora pacifica':  # 태평양해파리
+                if month in [7, 8, 9]:  # 대발생기
+                    return 2.0
+                elif month in [12, 1, 2]:  # 휴면기
+                    return 0.2
+
+            # 기본 계절 패턴 적용
+            seasonal_factor = self._get_seasonal_factor(species, current_date)
+            return seasonal_factor
+
+        except Exception:
+            return 1.0
+
+    def _calculate_prediction_confidence(self, env_suitability: float, profile: dict) -> float:
+        """예측 신뢰도 계산"""
+
+        # 환경 적합성이 높을수록 신뢰도 높음
+        base_confidence = env_suitability * 0.8
+
+        # 종별 데이터 신뢰성 보정
+        species_confidence_factor = profile.get('weight', 0.5)
+
+        # 최종 신뢰도 (0.2 ~ 0.9 범위)
+        confidence = base_confidence * species_confidence_factor
+        return max(0.2, min(0.9, confidence))
 
     def _is_within_grid(self, obs_lat: float, obs_lon: float, grid_lat: float, grid_lon: float, radius_km: float = 25) -> bool:
         """관측점이 격자점 반경 내에 있는지 확인"""
@@ -1246,20 +1680,17 @@ class MarineRealDataCollector:
 
             except Exception as e:
                 logger.warning(f"  ⚠️ {species} 데이터 수집 실패: {e}")
-                # 기본값으로 설정
+                # 환경 기반 예측으로 기본값 설정
                 species_key = species.replace(' ', '_')
                 for point in grid_points:
-                    batch_results[point][f"{species_key}_density"] = 0.001
-                    batch_results[point][f"{species_key}_weight"] = 0.1
+                    lat, lon = point
+                    env_prediction = self.predict_species_density_from_environment(
+                        species, lat, lon, start_date
+                    )
+                    batch_results[point][f"{species_key}_density"] = env_prediction['density']
+                    batch_results[point][f"{species_key}_weight"] = env_prediction['confidence']
 
         logger.info(f"🎯 7일 범위 배치 수집 완료: {len(batch_results)}개 격자점")
-
-        # 반환값 검증 및 로깅
-        if batch_results:
-            sample_key = next(iter(batch_results.keys()))
-            sample_value = batch_results[sample_key]
-            logger.debug(f"  샘플 키: {sample_key} (타입: {type(sample_key)})")
-            logger.debug(f"  샘플 값: {type(sample_value)} - {sample_value}")
 
         return batch_results
 
@@ -1336,7 +1767,12 @@ class MarineRealDataCollector:
         """7일 범위 내 가장 가까운 관측값 찾기 (시간 가중치 적용)"""
 
         if not observations:
-            return {'density': 0.001, 'weight': 0.1}  # 기본값
+            # 첫 번째 대상 종을 사용하여 환경 기반 예측 수행
+            first_species = TARGET_SPECIES[0]  # 'Aurelia aurita'
+            env_prediction = self.predict_species_density_from_environment(
+                first_species, target_lat, target_lon, start_date
+            )
+            return {'density': env_prediction['density'], 'weight': env_prediction['confidence']}
 
         from datetime import datetime
 
@@ -1345,7 +1781,12 @@ class MarineRealDataCollector:
             start_dt = datetime.strptime(start_date, '%Y-%m-%d')
             end_dt = datetime.strptime(end_date, '%Y-%m-%d')
         except:
-            return {'density': 0.001, 'weight': 0.1}
+            # 첫 번째 대상 종을 사용하여 환경 기반 예측 수행
+            first_species = TARGET_SPECIES[0]  # 'Aurelia aurita'
+            env_prediction = self.predict_species_density_from_environment(
+                first_species, target_lat, target_lon, start_date
+            )
+            return {'density': env_prediction['density'], 'weight': env_prediction['confidence']}
 
         best_obs = None
         best_score = float('inf')
@@ -1375,7 +1816,12 @@ class MarineRealDataCollector:
                 'weight': best_obs['weight']
             }
         else:
-            return {'density': 0.001, 'weight': 0.1}
+            # 첫 번째 대상 종을 사용하여 환경 기반 예측 수행
+            first_species = TARGET_SPECIES[0]  # 'Aurelia aurita'
+            env_prediction = self.predict_species_density_from_environment(
+                first_species, target_lat, target_lon, start_date
+            )
+            return {'density': env_prediction['density'], 'weight': env_prediction['confidence']}
 
     def _calculate_distance_to_coast(self, lat: float, lon: float) -> float:
         """해안선까지의 거리 계산 (km)"""
@@ -1458,13 +1904,7 @@ class MarineRealDataCollector:
                     bio_start_date, bio_end_date, grid_points
                 )
 
-                # 배치 데이터 타입 디버깅
-                logger.debug(f"  batch_bio_data 타입: {type(batch_bio_data)}")
-                if batch_bio_data:
-                    first_key = next(iter(batch_bio_data.keys())) if batch_bio_data else None
-                    first_value = batch_bio_data.get(first_key) if first_key else None
-                    logger.debug(f"  첫 번째 키: {first_key} (타입: {type(first_key)})")
-                    logger.debug(f"  첫 번째 값: {type(first_value)}")
+                logger.info(f"  배치 생물 데이터 수집 완료: {len(batch_bio_data)}개 격자점")
 
                 # 각 격자점별 데이터 처리
                 for lat, lon in grid_points:
@@ -1497,6 +1937,9 @@ class MarineRealDataCollector:
                         else:
                             logger.warning(f"  격자점 ({lat}, {lon}) - bio_data 딕셔너리가 아님: {type(bio_data)}, 기본값 사용")
 
+                        # 피쳐 이름 표준화
+                        combined_data = standardize_feature_names(combined_data)
+
                         # 생물 데이터가 없는 경우 하드코딩된 기본값 사용 (낮은 가중치)
                         for species in TARGET_SPECIES:
                             species_key = species.replace(' ', '_')
@@ -1504,19 +1947,15 @@ class MarineRealDataCollector:
                             weight_key = f"{species_key}_weight"
 
                             if density_key not in combined_data or combined_data[density_key] == 0:
-                                baseline = SPECIES_BASELINE_VALUES.get(species, {})
-
-                                # 환경 적합성 기반 적응형 가중치 계산
-                                adaptive_weight = self._calculate_adaptive_weight(
-                                    species, lat, lon, env_data
+                                # 환경 기반 밀도 예측 사용 (기존 하드코딩 값 대신)
+                                env_prediction = self.predict_species_density_from_environment(
+                                    species, lat, lon, target_date
                                 )
 
-                                combined_data[density_key] = baseline.get('default_density', 0.1)
-                                combined_data[weight_key] = adaptive_weight
-                                combined_data[f"{species_key}_source"] = 'baseline_adaptive'
+                                combined_data[density_key] = env_prediction['density']
+                                combined_data[weight_key] = env_prediction['confidence']  # 신뢰도를 가중치로 사용
                             else:
                                 combined_data[weight_key] = 1.0  # 실제 관측 데이터는 최대 가중치
-                                combined_data[f"{species_key}_source"] = 'observed'
 
                         all_data.append(combined_data)
                         processed += 1

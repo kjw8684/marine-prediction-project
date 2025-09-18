@@ -1,4 +1,0 @@
-[download_with_lock] 다운로드 시작: cmems_mod_glo_phy_anfc_0.083deg_P1D-m
-[download_with_lock] 다운로드 실패: C:\Users\kimjuwon\Documents\workspace\marine-prediction-project\cmems_output\cmems_phy_20240101.nc - variables must be of type list
-[download_with_lock] 다운로드 시작: cmems_mod_glo_bgc-bio_anfc_0.25deg_P1D-m
-[download_with_lock] 다운로드 실패: C:\Users\kimjuwon\Documents\workspace\marine-prediction-project\cmems_output\cmems_bgc_20240101.nc - variables must be of type list
